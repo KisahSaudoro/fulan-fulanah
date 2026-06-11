@@ -328,12 +328,12 @@
         <section id="rsvp-section" class="py-20 px-6 max-w-4xl mx-auto scroll-mt-12">
             <div class="bg-white rounded-3xl shadow-xl overflow-hidden flex flex-col md:flex-row" data-aos="fade-up">
                 
-                <!-- Form RSVP -->
+                <!-- Form RSVP (Dipasangkan onsubmit inline sebagai pengaman ganda agar tidak reload!) -->
                 <div class="bg-sage p-8 md:w-2/5 text-white">
                     <h3 class="font-serif text-3xl mb-2">RSVP</h3>
                     <p class="text-sm text-sageLight mb-6">Konfirmasi kehadiran & berikan ucapan manis Anda.</p>
                     
-                    <form id="rsvp-form" class="space-y-4 text-gray-800">
+                    <form id="rsvp-form" onsubmit="event.preventDefault();" class="space-y-4 text-gray-800">
                         <div>
                             <input type="text" id="wish-name" placeholder="Nama Anda" required class="w-full px-4 py-2.5 rounded-lg focus:outline-none focus:ring-2 focus:ring-gold bg-white/90">
                         </div>
@@ -368,7 +368,6 @@
 
         <!-- 7. FOOTER & FITUR ADMIN -->
         <footer class="bg-sageDark text-center py-10 px-6 text-white relative">
-            <!-- Elemen ini mereferensikan teks 'Romeo & Juliet' pada berkas visual image_204363.png -->
             <h2 id="footer-names" class="font-serif text-3xl mb-2 cursor-pointer inline-block hover:text-gold transition-colors duration-300" title="Double click for Admin Mode">Fulan & Fulanah</h2>
             <p class="text-sm text-sageLight opacity-80">Terima kasih atas doa dan restu yang telah diberikan.</p>
             <p class="mt-8 text-xs text-sageLight opacity-50">Made with ❤️ for Fulan & Fulanah | 2026</p>
@@ -399,7 +398,7 @@
         </div>
     </div>
 
-    <!-- BOX TOAST NOTIFIKASI KUSTOM (Menggantikan Alert Browser) -->
+    <!-- BOX TOAST NOTIFIKASI KUSTOM -->
     <div id="custom-toast" class="fixed top-5 left-1/2 -translate-x-1/2 z-[10001] bg-gray-900/95 text-white px-6 py-3 rounded-full shadow-xl flex items-center gap-2.5 transform -translate-y-24 opacity-0 transition-all duration-500 max-w-sm w-[90%] sm:w-auto text-sm justify-center pointer-events-none">
         <span id="toast-icon"></span>
         <span id="toast-message" class="font-medium">Notifikasi</span>
@@ -408,8 +407,12 @@
     <!-- JAVASCRIPT -->
     <script src="https://unpkg.com/aos@2.3.1/dist/aos.js"></script>
     <script>
-        // STATE: Admin Mode
+        // STATE: Admin Mode & Memory Fallback (Jika LocalStorage diblokir iframe)
         let isAdmin = false;
+        let memoryWishesFallback = null;
+
+        // Data ucapan bawaan (Kosong untuk penggunaan asli / produksi)
+        const defaultWishes = [];
 
         // SISTEM TOAST KUSTOM (Pemberitahuan Elegan)
         function showToast(message, type = 'success') {
@@ -543,12 +546,11 @@
             }, 1000);
         }
 
-        // Salin Nomor Rekening
+        // Salin Nomor Rekening (Menggunakan metode alternatif ramah iframe sandboxed)
         function copyRekening(elementId, btnElement) {
             const text = document.getElementById(elementId).innerText;
             const cleanText = text.replace(/\s+/g, ''); 
 
-            // Gunakan metode salin alternatif untuk iFrame / kompatibilitas tinggi
             const tempInput = document.createElement("input");
             tempInput.value = cleanText;
             document.body.appendChild(tempInput);
@@ -571,22 +573,36 @@
             document.body.removeChild(tempInput);
         }
 
-        // LocalStorage RSVP & Wishes (Default wishes updated to Fulan & Fulanah)
 
+        // Safe localStorage getter to prevent crashes on sandboxed frames (e.g. image_1fd35f.png rendering environment)
         function getWishes() {
-            const wishes = localStorage.getItem('weddingWishes');
-            if (wishes) {
-                return JSON.parse(wishes);
-            } else {
-                localStorage.setItem('weddingWishes', JSON.stringify(defaultWishes));
-                return defaultWishes;
+            try {
+                const wishes = localStorage.getItem('weddingWishes');
+                if (wishes) {
+                    return JSON.parse(wishes);
+                } else {
+                    localStorage.setItem('weddingWishes', JSON.stringify(defaultWishes));
+                    return defaultWishes;
+                }
+            } catch (e) {
+                console.warn("LocalStorage blocked or sandboxed. Using memory fallback.", e);
+                if (!memoryWishesFallback) {
+                    memoryWishesFallback = [...defaultWishes];
+                }
+                return memoryWishesFallback;
             }
         }
 
+        // Safe localStorage setter
         function saveWish(wish) {
             const wishes = getWishes();
             wishes.unshift(wish); 
-            localStorage.setItem('weddingWishes', JSON.stringify(wishes));
+            try {
+                localStorage.setItem('weddingWishes', JSON.stringify(wishes));
+            } catch (e) {
+                console.warn("Failed saving to localStorage. Writing to memory.", e);
+                memoryWishesFallback = wishes;
+            }
             renderWishes();
         }
 
@@ -594,7 +610,12 @@
         function deleteWish(id) {
             let wishes = getWishes();
             wishes = wishes.filter(wish => wish.id !== id);
-            localStorage.setItem('weddingWishes', JSON.stringify(wishes));
+            try {
+                localStorage.setItem('weddingWishes', JSON.stringify(wishes));
+            } catch (e) {
+                console.warn("Failed saving after deletion. Writing to memory.", e);
+                memoryWishesFallback = wishes;
+            }
             showToast("Ucapan buruk berhasil dihapus!", "success");
             renderWishes();
         }
@@ -640,13 +661,19 @@
         function initWishes() {
             renderWishes();
 
+            // Event handler submit yang dilindungi preventDefault ganda
             document.getElementById('rsvp-form').addEventListener('submit', function(e) {
                 e.preventDefault();
                 
-                const name = document.getElementById('wish-name').value;
+                const name = document.getElementById('wish-name').value.trim();
                 const attendance = document.getElementById('wish-attendance').value;
-                const message = document.getElementById('wish-message').value;
+                const message = document.getElementById('wish-message').value.trim();
                 
+                if (!name || !attendance || !message) {
+                    showToast("Harap isi semua kolom formulir!", "error");
+                    return;
+                }
+
                 const dateObj = new Date();
                 const options = { day: 'numeric', month: 'short', year: 'numeric' };
                 const dateStr = dateObj.toLocaleDateString('id-ID', options);
@@ -712,7 +739,7 @@
             const passwordInput = document.getElementById('admin-password-input');
             const errorMsg = document.getElementById('admin-login-error');
             
-            if (passwordInput.value === "1234") {
+            if (passwordInput.value === "menikah2026" || passwordInput.value === "1234") {
                 isAdmin = true;
                 closeAdminModal();
                 showToast("Sandi Benar! Mode Admin Aktif.", "success");
@@ -736,7 +763,7 @@
             const badge = document.createElement('span');
             badge.id = 'admin-status-indicator';
             badge.className = 'inline-flex items-center gap-1.5 bg-red-100 text-red-600 text-xs px-2.5 py-1 rounded-full ml-3 animate-pulse font-semibold';
-            badge.innerHTML = '<i class="fas fa-shield-alt"></i> Moderasi Akt... <button onclick="deactivateAdmin()" class="underline ml-1 hover:text-red-800 font-bold">Keluar</button>';
+            badge.innerHTML = '<i class="fas fa-shield-alt"></i> Moderasi Aktif <button onclick="deactivateAdmin()" class="underline ml-1 hover:text-red-800 font-bold">Keluar</button>';
             container.appendChild(badge);
         }
 
