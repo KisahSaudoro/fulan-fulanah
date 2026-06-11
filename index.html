@@ -328,7 +328,7 @@
         <section id="rsvp-section" class="py-20 px-6 max-w-4xl mx-auto scroll-mt-12">
             <div class="bg-white rounded-3xl shadow-xl overflow-hidden flex flex-col md:flex-row" data-aos="fade-up">
                 
-                <!-- Form RSVP (Dipasangkan onsubmit inline sebagai pengaman ganda agar tidak reload!) -->
+                <!-- Form RSVP -->
                 <div class="bg-sage p-8 md:w-2/5 text-white">
                     <h3 class="font-serif text-3xl mb-2">RSVP</h3>
                     <p class="text-sm text-sageLight mb-6">Konfirmasi kehadiran & berikan ucapan manis Anda.</p>
@@ -359,7 +359,10 @@
                         <span><span id="wish-count">0</span> Ucapan</span>
                     </h3>
                     <div class="wishlist-container h-[400px] overflow-y-auto pr-2 space-y-4" id="wishlist">
-                        <!-- Wishes will be generated here by JS -->
+                        <div class="text-center text-gray-400 py-20">
+                            <i class="fas fa-spinner fa-spin text-2xl mb-2"></i>
+                            <p class="text-sm">Menghubungkan ke database...</p>
+                        </div>
                     </div>
                 </div>
 
@@ -375,7 +378,7 @@
 
     </main>
 
-    <!-- MODAL LOGIN ADMIN KUSTOM (Menggantikan Prompt Browser) -->
+    <!-- MODAL LOGIN ADMIN KUSTOM -->
     <div id="admin-modal" class="fixed inset-0 bg-black/60 backdrop-blur-sm z-[10000] hidden items-center justify-center p-4">
         <div class="bg-white rounded-3xl max-w-sm w-full p-6 shadow-2xl border-2 border-sageLight transform scale-95 transition-all duration-300" id="admin-modal-content">
             <div class="text-center mb-4">
@@ -404,17 +407,41 @@
         <span id="toast-message" class="font-medium">Notifikasi</span>
     </div>
 
-    <!-- JAVASCRIPT -->
+    <!-- JAVASCRIPT & FIREBASE CONFIGURATION -->
     <script src="https://unpkg.com/aos@2.3.1/dist/aos.js"></script>
-    <script>
-        // STATE: Admin Mode & Memory Fallback (Jika LocalStorage diblokir iframe)
+    
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, getDoc, addDoc, deleteDoc, onSnapshot, collection, query } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // Firebase Configuration (Sesuai parameter dari Anda)
+        const firebaseConfig = {
+            apiKey: "AIzaSyAwvnZtF7pcqsknD-pdz53n3m-BsPYX-1w",
+            authDomain: "faktakarta-a71e0.firebaseapp.com",
+            projectId: "faktakarta-a71e0",
+            storageBucket: "faktakarta-a71e0.firebasestorage.app",
+            messagingSenderId: "295410199531",
+            appId: "1:295410199531:web:a68f8a0eb57789dca187ae",
+            measurementId: "G-XWYP2MS1DZ"
+        };
+
+        // Initialize Firebase
+        const app = initializeApp(firebaseConfig);
+        const db = getFirestore(app);
+        const auth = getAuth(app);
+
+        // State System
         let isAdmin = false;
-        let memoryWishesFallback = null;
+        let currentUser = null;
+        let unsubscribeWishes = null;
+        let isPlaying = false;
 
-        // Data ucapan bawaan (Kosong untuk penggunaan asli / produksi)
-        const defaultWishes = [];
+        // Firebase Rule Compliant Path
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'faktakarta-a71e0';
+        const wishesColRef = collection(db, 'artifacts', appId, 'public', 'data', 'wishes');
 
-        // SISTEM TOAST KUSTOM (Pemberitahuan Elegan)
+        // TOAST NOTIFICATION SYSTEM
         function showToast(message, type = 'success') {
             const toast = document.getElementById('custom-toast');
             const toastMsg = document.getElementById('toast-message');
@@ -430,7 +457,6 @@
                 toastIcon.innerHTML = '<i class="fas fa-info-circle text-gold text-base"></i>';
             }
             
-            // Tampilkan animasi transisi toast
             toast.classList.remove('-translate-y-24', 'opacity-0');
             toast.classList.add('translate-y-0', 'opacity-100');
             
@@ -440,7 +466,135 @@
             }, 3000);
         }
 
-        // Parse parameter URL untuk nama tamu
+        // Authenticate User Anonymously (RULE 3 with Custom Config Safe Fallback)
+        async function authenticate() {
+            try {
+                if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                    try {
+                        await signInWithCustomToken(auth, __initial_auth_token);
+                        return; // Berhasil menggunakan token kustom bawaan
+                    } catch (tokenError) {
+                        // Custom token mismatch karena project ID yang berbeda, beralih ke Anonim secara aman
+                        console.warn("Custom token auth failed, falling back to anonymous auth:", tokenError);
+                    }
+                }
+                await signInAnonymously(auth);
+            } catch (error) {
+                console.error("Firebase Authentication failed:", error);
+                showToast("Gagal menyambungkan autentikasi aman.", "error");
+            }
+        }
+
+        // Listen for Auth changes & attach Snapshot listener
+        onAuthStateChanged(auth, (user) => {
+            if (user) {
+                currentUser = user;
+                listenToWishes();
+            } else {
+                authenticate();
+            }
+        });
+
+        // Listen to Wishes from Firebase Firestore
+        function listenToWishes() {
+            if (unsubscribeWishes) unsubscribeWishes();
+
+            // Simple Collection Query (RULE 2 - No complex orderBys/wheres to prevent missing index errors)
+            unsubscribeWishes = onSnapshot(wishesColRef, (snapshot) => {
+                const wishes = [];
+                snapshot.forEach((doc) => {
+                    wishes.push({ id: doc.id, ...doc.data() });
+                });
+
+                // Sort descending by timestamp in JavaScript Memory (RULE 2 Compliant)
+                wishes.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+
+                renderWishes(wishes);
+            }, (error) => {
+                console.error("Firebase fetch error:", error);
+                showToast("Terjadi kendala memuat ucapan.", "error");
+            });
+        }
+
+        // Render Wishes to DOM
+        function renderWishes(wishes) {
+            const container = document.getElementById('wishlist');
+            document.getElementById('wish-count').innerText = wishes.length;
+            container.innerHTML = '';
+
+            if (wishes.length === 0) {
+                container.innerHTML = '<p class="text-center text-gray-500 text-sm mt-10">Belum ada ucapan. Jadilah yang pertama!</p>';
+                return;
+            }
+
+            wishes.forEach(wish => {
+                const attendanceBadge = wish.attendance === "Hadir" 
+                    ? '<span class="bg-sageLight text-sageDark text-[10px] px-2 py-1 rounded-full ml-2"><i class="fas fa-check-circle"></i> Hadir</span>'
+                    : '<span class="bg-red-50 text-red-500 text-[10px] px-2 py-1 rounded-full ml-2"><i class="fas fa-times-circle"></i> Tidak Hadir</span>';
+
+                // Tombol delete hanya muncul jika Admin Mode Aktif
+                const deleteBtn = isAdmin 
+                    ? `<button onclick="deleteWish('${wish.id}')" class="text-red-500 hover:text-red-700 ml-auto p-1 text-sm transition" title="Hapus Ucapan Buruk"><i class="fas fa-trash-alt"></i></button>`
+                    : '';
+
+                const html = `
+                    <div class="bg-white p-4 rounded-xl shadow-sm border border-gray-100 flex flex-col mb-3 transform transition hover:scale-[1.01]">
+                        <div class="flex items-center justify-between mb-2">
+                            <div class="flex items-center flex-wrap gap-y-1">
+                                <h4 class="font-bold text-gray-800 text-sm">${wish.name}</h4>
+                                ${attendanceBadge}
+                            </div>
+                            ${deleteBtn}
+                        </div>
+                        <p class="text-gray-600 text-sm leading-relaxed">${wish.message}</p>
+                        <span class="text-[10px] text-gray-400 mt-2 block">${wish.date}</span>
+                    </div>
+                `;
+                container.innerHTML += html;
+            });
+        }
+
+        // Handle Submit RSVP Wish to Firebase
+        async function submitWish(name, attendance, message) {
+            if (!currentUser) {
+                showToast("Menyambungkan kembali ke database server...", "info");
+                await authenticate();
+                if (!currentUser) return;
+            }
+
+            const dateObj = new Date();
+            const options = { day: 'numeric', month: 'short', year: 'numeric' };
+            const dateStr = dateObj.toLocaleDateString('id-ID', options);
+
+            try {
+                await addDoc(wishesColRef, {
+                    name: name,
+                    attendance: attendance,
+                    message: message,
+                    date: dateStr,
+                    timestamp: Date.now()
+                });
+                showToast("Terima kasih! RSVP & ucapan Anda berhasil terkirim.", "success");
+            } catch (error) {
+                console.error("Firestore write error:", error);
+                showToast("Gagal mengirim ucapan ke database.", "error");
+            }
+        }
+
+        // Delete Wish Document from Firebase
+        async function deleteWish(docId) {
+            if (!currentUser) return;
+            try {
+                const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'wishes', docId);
+                await deleteDoc(docRef);
+                showToast("Ucapan berhasil dihapus dari server!", "success");
+            } catch (error) {
+                console.error("Firestore delete error:", error);
+                showToast("Gagal menghapus ucapan.", "error");
+            }
+        }
+
+        // INITIALIZATION EVENTS
         document.addEventListener('DOMContentLoaded', () => {
             const urlParams = new URLSearchParams(window.location.search);
             const guestName = urlParams.get('to');
@@ -448,42 +602,66 @@
             
             if (guestName) {
                 guestElement.textContent = guestName;
-                document.getElementById('wish-name').value = guestName; // Autofill form nama
+                document.getElementById('wish-name').value = guestName; 
             } else {
                 guestElement.textContent = "Bapak/Ibu/Saudara/i";
             }
 
-            // Init Wishlist
-            initWishes();
+            // PERBAIKAN 1: Memeriksa sessionStorage apakah sebelumnya undangan sudah pernah dibuka
+            if (sessionStorage.getItem('invitationOpened') === 'true') {
+                openInvitation(true); // Dilewati tanpa interupsi Cover
+            }
+
+            // Setup Form Submission
+            document.getElementById('rsvp-form').addEventListener('submit', function(e) {
+                e.preventDefault();
+                const name = document.getElementById('wish-name').value.trim();
+                const attendance = document.getElementById('wish-attendance').value;
+                const message = document.getElementById('wish-message').value.trim();
+                
+                if (!name || !attendance || !message) {
+                    showToast("Harap isi semua kolom formulir!", "error");
+                    return;
+                }
+
+                submitWish(name, attendance, message);
+                this.reset();
+
+                const guestName = new URLSearchParams(window.location.search).get('to');
+                if (guestName) document.getElementById('wish-name').value = guestName;
+            });
         });
 
-        // Buka Undangan (Hide cover, play audio, init AOS, show nav)
-        function openInvitation() {
-            // Hide Cover
+        // Buka Undangan (Menghilangkan cover, menjalankan audio, init AOS, simpan state)
+        function openInvitation(isRestore = false) {
+            // Catat state "Telah Terbuka" agar setelah reload tidak mengulang Cover lagi
+            sessionStorage.setItem('invitationOpened', 'true');
+
+            // Sembunyikan Cover
             const cover = document.getElementById('cover-screen');
             cover.classList.add('cover-hidden');
             
-            // Show Main Content
+            // Tampilkan Konten Utama
             const mainContent = document.getElementById('main-content');
             mainContent.classList.remove('hidden');
             setTimeout(() => {
                 mainContent.classList.remove('opacity-0');
             }, 100);
 
-            // Initialize AOS (Animasi on Scroll)
+            // Inisialisasi AOS (Animate on Scroll)
             AOS.init({
                 once: true, 
                 offset: 50,
             });
 
-            // Play Audio & Show Music Button
+            // Putar Musik
             const music = document.getElementById('bg-music');
             const musicBtn = document.getElementById('music-btn');
             
             musicBtn.classList.remove('hidden');
             musicBtn.classList.add('flex');
             
-            // Show Bottom Navigation
+            // Tampilkan Navigasi Cepat
             const bottomNav = document.getElementById('bottom-nav');
             bottomNav.classList.remove('hidden');
             bottomNav.classList.add('flex');
@@ -491,20 +669,30 @@
                 bottomNav.classList.add('opacity-100');
             }, 100);
             
-            // Play musik otomatis jika didukung peramban
-            music.play().catch(e => console.log("Audio autoplay prevented by browser"));
+            if (!isRestore) {
+                isPlaying = true;
+                music.play().catch(e => console.log("Audio autoplay dicegah sistem peramban."));
+            } else {
+                // Di-restore pasca refresh: coba putar perlahan tanpa memaksa error
+                music.play().then(() => {
+                    isPlaying = true;
+                }).catch(e => {
+                    console.log("Autoplay dicegah pasca refresh.");
+                    isPlaying = false;
+                    const musicIcon = document.getElementById('music-icon');
+                    musicIcon.classList.remove('fa-compact-disc', 'spin-anim');
+                    musicIcon.classList.add('fa-pause-circle');
+                });
+            }
             
-            // Start Countdown
             startCountdown();
         }
 
-        // Audio Control (Play/Pause)
+        // Audio Playback Controller
         const musicBtn = document.getElementById('music-btn');
-        const musicIcon = document.getElementById('music-icon');
-        const musicAudio = document.getElementById('bg-music');
-        let isPlaying = true;
-
         musicBtn.addEventListener('click', () => {
+            const musicAudio = document.getElementById('bg-music');
+            const musicIcon = document.getElementById('music-icon');
             if (isPlaying) {
                 musicAudio.pause();
                 musicIcon.classList.remove('fa-compact-disc', 'spin-anim');
@@ -517,7 +705,7 @@
             isPlaying = !isPlaying;
         });
 
-        // Countdown Timer
+        // Countdown Timer Engine
         function startCountdown() {
             const targetDate = new Date("Oct 10, 2026 08:00:00").getTime();
 
@@ -546,7 +734,7 @@
             }, 1000);
         }
 
-        // Salin Nomor Rekening (Menggunakan metode alternatif ramah iframe sandboxed)
+        // Salin Rekening
         function copyRekening(elementId, btnElement) {
             const text = document.getElementById(elementId).innerText;
             const cleanText = text.replace(/\s+/g, ''); 
@@ -573,132 +761,9 @@
             document.body.removeChild(tempInput);
         }
 
-
-        // Safe localStorage getter to prevent crashes on sandboxed frames (e.g. image_1fd35f.png rendering environment)
-        function getWishes() {
-            try {
-                const wishes = localStorage.getItem('weddingWishes');
-                if (wishes) {
-                    return JSON.parse(wishes);
-                } else {
-                    localStorage.setItem('weddingWishes', JSON.stringify(defaultWishes));
-                    return defaultWishes;
-                }
-            } catch (e) {
-                console.warn("LocalStorage blocked or sandboxed. Using memory fallback.", e);
-                if (!memoryWishesFallback) {
-                    memoryWishesFallback = [...defaultWishes];
-                }
-                return memoryWishesFallback;
-            }
-        }
-
-        // Safe localStorage setter
-        function saveWish(wish) {
-            const wishes = getWishes();
-            wishes.unshift(wish); 
-            try {
-                localStorage.setItem('weddingWishes', JSON.stringify(wishes));
-            } catch (e) {
-                console.warn("Failed saving to localStorage. Writing to memory.", e);
-                memoryWishesFallback = wishes;
-            }
-            renderWishes();
-        }
-
-        // Hapus Ucapan (Hanya dalam Mode Admin)
-        function deleteWish(id) {
-            let wishes = getWishes();
-            wishes = wishes.filter(wish => wish.id !== id);
-            try {
-                localStorage.setItem('weddingWishes', JSON.stringify(wishes));
-            } catch (e) {
-                console.warn("Failed saving after deletion. Writing to memory.", e);
-                memoryWishesFallback = wishes;
-            }
-            showToast("Ucapan buruk berhasil dihapus!", "success");
-            renderWishes();
-        }
-
-        function renderWishes() {
-            const wishes = getWishes();
-            const container = document.getElementById('wishlist');
-            document.getElementById('wish-count').innerText = wishes.length;
-            container.innerHTML = '';
-
-            if(wishes.length === 0) {
-                container.innerHTML = '<p class="text-center text-gray-500 text-sm mt-10">Belum ada ucapan. Jadilah yang pertama!</p>';
-                return;
-            }
-
-            wishes.forEach(wish => {
-                const attendanceBadge = wish.attendance === "Hadir" 
-                    ? '<span class="bg-sageLight text-sageDark text-[10px] px-2 py-1 rounded-full ml-2"><i class="fas fa-check-circle"></i> Hadir</span>'
-                    : '<span class="bg-red-50 text-red-500 text-[10px] px-2 py-1 rounded-full ml-2"><i class="fas fa-times-circle"></i> Tidak Hadir</span>';
-
-                // Tombol hapus hanya jika Mode Admin Aktif
-                const deleteBtn = isAdmin 
-                    ? `<button onclick="deleteWish(${wish.id})" class="text-red-500 hover:text-red-700 ml-auto p-1 text-sm transition" title="Hapus Ucapan Buruk"><i class="fas fa-trash-alt"></i></button>`
-                    : '';
-
-                const html = `
-                    <div class="bg-white p-4 rounded-xl shadow-sm border border-gray-100 flex flex-col mb-3 transform transition hover:scale-[1.01]">
-                        <div class="flex items-center justify-between mb-2">
-                            <div class="flex items-center flex-wrap gap-y-1">
-                                <h4 class="font-bold text-gray-800 text-sm">${wish.name}</h4>
-                                ${attendanceBadge}
-                            </div>
-                            ${deleteBtn}
-                        </div>
-                        <p class="text-gray-600 text-sm leading-relaxed">${wish.message}</p>
-                        <span class="text-[10px] text-gray-400 mt-2 block">${wish.date}</span>
-                    </div>
-                `;
-                container.innerHTML += html;
-            });
-        }
-
-        function initWishes() {
-            renderWishes();
-
-            // Event handler submit yang dilindungi preventDefault ganda
-            document.getElementById('rsvp-form').addEventListener('submit', function(e) {
-                e.preventDefault();
-                
-                const name = document.getElementById('wish-name').value.trim();
-                const attendance = document.getElementById('wish-attendance').value;
-                const message = document.getElementById('wish-message').value.trim();
-                
-                if (!name || !attendance || !message) {
-                    showToast("Harap isi semua kolom formulir!", "error");
-                    return;
-                }
-
-                const dateObj = new Date();
-                const options = { day: 'numeric', month: 'short', year: 'numeric' };
-                const dateStr = dateObj.toLocaleDateString('id-ID', options);
-
-                const newWish = {
-                    id: Date.now(),
-                    name: name,
-                    attendance: attendance,
-                    message: message,
-                    date: dateStr
-                };
-
-                saveWish(newWish);
-                this.reset();
-
-                const guestName = new URLSearchParams(window.location.search).get('to');
-                if(guestName) document.getElementById('wish-name').value = guestName;
-
-                showToast("Terima kasih! RSVP dan ucapan Anda telah terkirim.", "success");
-            });
-        }
-
-        // Admin Mode (Triggered by Double Click on Footer Names)
+        // Admin Modal Controls
         document.getElementById('footer-names').addEventListener('dblclick', function() {
-            if(isAdmin) {
+            if (isAdmin) {
                 deactivateAdmin();
                 return;
             }
@@ -742,12 +807,12 @@
             if (passwordInput.value === "menikah2026" || passwordInput.value === "1234") {
                 isAdmin = true;
                 closeAdminModal();
-                showToast("Sandi Benar! Mode Admin Aktif.", "success");
+                showToast("Akses Diterima! Admin Mode Aktif.", "success");
                 
                 addAdminBadge();
-                renderWishes();
+                // Re-trigger wish data to display delete buttons
+                listenToWishes();
                 
-                // Gulir langsung ke panel buku tamu rsvp
                 document.getElementById('rsvp-section').scrollIntoView({ behavior: 'smooth', block: 'center' });
             } else {
                 errorMsg.classList.remove('hidden');
@@ -763,8 +828,10 @@
             const badge = document.createElement('span');
             badge.id = 'admin-status-indicator';
             badge.className = 'inline-flex items-center gap-1.5 bg-red-100 text-red-600 text-xs px-2.5 py-1 rounded-full ml-3 animate-pulse font-semibold';
-            badge.innerHTML = '<i class="fas fa-shield-alt"></i> Moderasi Aktif <button onclick="deactivateAdmin()" class="underline ml-1 hover:text-red-800 font-bold">Keluar</button>';
+            badge.innerHTML = '<i class="fas fa-shield-alt"></i> Moderasi Aktif <button id="exit-admin-btn" class="underline ml-1 hover:text-red-800 font-bold">Keluar</button>';
             container.appendChild(badge);
+
+            document.getElementById('exit-admin-btn').addEventListener('click', deactivateAdmin);
         }
 
         function deactivateAdmin() {
@@ -772,15 +839,22 @@
             showToast("Mode Admin dinonaktifkan.", "info");
             const statusIndicator = document.getElementById('admin-status-indicator');
             if (statusIndicator) statusIndicator.remove();
-            renderWishes();
+            listenToWishes();
         }
 
-        // Support Enter key on Admin Login Password input
         document.getElementById('admin-password-input').addEventListener('keypress', function(e) {
             if (e.key === 'Enter') {
                 submitAdminLogin();
             }
         });
+
+        // Expose modules globally so inline HTML elements can access them
+        window.openInvitation = openInvitation;
+        window.copyRekening = copyRekening;
+        window.deleteWish = deleteWish;
+        window.closeAdminModal = closeAdminModal;
+        window.submitAdminLogin = submitAdminLogin;
+        window.deactivateAdmin = deactivateAdmin;
 
     </script>
 </body>
