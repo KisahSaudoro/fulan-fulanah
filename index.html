@@ -607,11 +607,6 @@
                 guestElement.textContent = "Bapak/Ibu/Saudara/i";
             }
 
-            // Restore status undangan jika sebelumnya sudah dibuka
-            if (sessionStorage.getItem('invitationOpened') === 'true') {
-                openInvitation(true);
-            }
-
             // Handler kirim formulir
             document.getElementById('rsvp-form').addEventListener('submit', function(e) {
                 e.preventDefault();
